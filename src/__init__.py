@@ -1,0 +1,1 @@
+"""GitFolio Generator source package."""
