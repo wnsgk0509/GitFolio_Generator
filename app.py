@@ -10,13 +10,16 @@ import os
 import streamlit as st
 from dotenv import load_dotenv
 
+from src.gist_exporter import publish_gist
 from src.github_extractor import (
     get_readme,
     get_repo,
     get_user_commits,
     get_user_pull_requests,
 )
+from src.html_exporter import export_portfolio_html
 from src.llm_generator import generate_portfolio
+from src.notion_exporter import send_markdown_to_notion
 
 load_dotenv()
 
@@ -30,15 +33,19 @@ PORTFOLIO_SECTIONS = (
 )
 
 
-def _secret(name: str) -> str:
-    """Resolve a secret from Streamlit secrets, then environment variables."""
-    try:
-        value = st.secrets.get(name, "")
-        if value:
-            return str(value)
-    except Exception:
-        pass
-    return os.getenv(name, "")
+def _secret(*names: str) -> str:
+    """Resolve a secret from Streamlit secrets, then environment variables, checking aliases."""
+    for name in names:
+        try:
+            value = st.secrets.get(name, "")
+            if value:
+                return str(value)
+        except Exception:
+            pass
+        val = os.getenv(name, "")
+        if val:
+            return val
+    return ""
 
 
 def init_session_state() -> None:
@@ -46,17 +53,25 @@ def init_session_state() -> None:
         st.session_state.gf_portfolio_md = ""
     if "gf_error" not in st.session_state:
         st.session_state.gf_error = ""
+    if "gf_repo_url_saved" not in st.session_state:
+        st.session_state.gf_repo_url_saved = ""
+    if "gf_username_saved" not in st.session_state:
+        st.session_state.gf_username_saved = ""
+    if "gf_gist_url" not in st.session_state:
+        st.session_state.gf_gist_url = ""
+    if "gf_notion_url" not in st.session_state:
+        st.session_state.gf_notion_url = ""
 
 
-def render_sidebar() -> tuple[str, str]:
+def render_sidebar() -> tuple[str, str, str, str]:
     st.sidebar.header("API Keys")
     st.sidebar.caption("키는 세션에만 사용합니다. 코드에 하드코딩하지 마세요.")
 
     github_token = st.sidebar.text_input(
         "GitHub PAT",
-        value=_secret("GITHUB_TOKEN"),
+        value=_secret("GITHUB_TOKEN", "GITHUB_PAT"),
         type="password",
-        help="repo 범위가 있는 Personal Access Token",
+        help="repo, gist 범위가 있는 Personal Access Token",
         key="gf_github_token",
     )
     gemini_api_key = st.sidebar.text_input(
@@ -65,7 +80,28 @@ def render_sidebar() -> tuple[str, str]:
         type="password",
         key="gf_gemini_api_key",
     )
-    return github_token.strip(), gemini_api_key.strip()
+
+    with st.sidebar.expander("Notion 설정 (선택)", expanded=False):
+        notion_token = st.text_input(
+            "Notion Token",
+            value=_secret("NOTION_TOKEN"),
+            type="password",
+            help="Notion Internal Integration Token (secret_...)",
+            key="gf_sidebar_notion_token",
+        )
+        notion_target = st.text_input(
+            "Notion Target (Page/DB)",
+            value=_secret("NOTION_TARGET", "NOTION_TARGET_ID"),
+            help="기본으로 내보낼 Notion 페이지 또는 데이터베이스 URL/ID",
+            key="gf_sidebar_notion_target",
+        )
+
+    return (
+        github_token.strip(),
+        gemini_api_key.strip(),
+        notion_token.strip(),
+        notion_target.strip(),
+    )
 
 
 def generate_portfolio_markdown(
@@ -123,7 +159,7 @@ def main() -> None:
         f"구성: **{' · '.join(PORTFOLIO_SECTIONS)}**"
     )
 
-    github_token, gemini_api_key = render_sidebar()
+    github_token, gemini_api_key, notion_token, notion_target = render_sidebar()
 
     with st.form("gf_generate_form"):
         repo_url = st.text_input(
@@ -141,6 +177,10 @@ def main() -> None:
     if submitted:
         st.session_state.gf_error = ""
         st.session_state.gf_portfolio_md = ""
+        st.session_state.gf_gist_url = ""
+        st.session_state.gf_notion_url = ""
+        st.session_state.gf_repo_url_saved = repo_url.strip()
+        st.session_state.gf_username_saved = username.strip()
 
         missing = []
         if not repo_url.strip():
@@ -171,12 +211,131 @@ def main() -> None:
     if st.session_state.gf_portfolio_md:
         st.subheader("미리보기")
         st.markdown(st.session_state.gf_portfolio_md)
-        st.download_button(
-            label="마크다운 다운로드",
-            data=st.session_state.gf_portfolio_md,
-            file_name="gitfolio.md",
-            mime="text/markdown",
+
+        st.divider()
+        st.subheader("📤 포트폴리오 저장 및 공유")
+
+        saved_repo = st.session_state.gf_repo_url_saved
+        repo_slug = (
+            saved_repo.rstrip("/").split("/")[-1].removesuffix(".git")
+            if saved_repo
+            else "project"
         )
+        saved_user = st.session_state.gf_username_saved or "developer"
+
+        html_content = export_portfolio_html(
+            st.session_state.gf_portfolio_md,
+            title=f"{repo_slug} 포트폴리오 ({saved_user})",
+        )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.download_button(
+                label="📥 마크다운 (.md) 다운로드",
+                data=st.session_state.gf_portfolio_md,
+                file_name=f"{repo_slug}_portfolio.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
+        with col2:
+            st.download_button(
+                label="📄 웹 / PDF 인쇄용 HTML 다운로드",
+                data=html_content,
+                file_name=f"{repo_slug}_portfolio.html",
+                mime="text/html",
+                help="브라우저에서 다운로드한 HTML을 열고 Ctrl+P(인쇄)를 누르면 PDF로 바로 저장할 수 있습니다.",
+                use_container_width=True,
+            )
+
+        with st.expander("📋 마크다운 원본 텍스트 보기 (우측 상단 복사 아이콘 사용)"):
+            st.code(st.session_state.gf_portfolio_md, language="markdown")
+
+        st.write("")
+        tab_gist, tab_notion = st.tabs(["🐙 GitHub Gist 배포", "📝 Notion으로 내보내기"])
+
+        with tab_gist:
+            st.caption(
+                "GitHub Gist로 발행하여 외부에 바로 공유 가능한 공개/비공개 링크를 생성합니다. (PAT에 `gist` 스코프 필요)"
+            )
+            c_g1, c_g2 = st.columns([3, 1])
+            with c_g1:
+                gist_desc = st.text_input(
+                    "Gist 설명",
+                    value=f"GitFolio Portfolio - {repo_slug} ({saved_user})",
+                    key="gf_gist_desc_input",
+                )
+            with c_g2:
+                gist_public = st.checkbox("공개(Public) Gist", value=True, key="gf_gist_public_input")
+
+            if st.button("🚀 Gist로 발행하기", type="secondary", key="gf_btn_gist"):
+                if not github_token:
+                    st.error("GitHub PAT가 필요합니다. 사이드바에 PAT를 입력해 주세요.")
+                else:
+                    try:
+                        with st.spinner("Gist 생성 중..."):
+                            gist_url = publish_gist(
+                                github_token=github_token,
+                                markdown=st.session_state.gf_portfolio_md,
+                                filename=f"{repo_slug}_portfolio.md",
+                                description=gist_desc,
+                                public=gist_public,
+                            )
+                            st.session_state.gf_gist_url = gist_url
+                    except Exception as exc:
+                        st.error(f"Gist 생성 실패: {exc}")
+
+            if st.session_state.gf_gist_url:
+                st.success("Gist가 성공적으로 발행되었습니다!")
+                st.link_button("🔗 생성된 Gist 열기", st.session_state.gf_gist_url)
+
+        with tab_notion:
+            st.caption(
+                "Notion 페이지 또는 데이터베이스에 포트폴리오를 블록으로 추가합니다. "
+                "(대상 페이지 우측 상단 `···` -> `연결(Connections)`에서 노션 Integration을 추가해야 합니다.)"
+            )
+            notion_token_input = st.text_input(
+                "Notion Integration Token",
+                value=notion_token,
+                type="password",
+                placeholder="secret_...",
+                key="gf_notion_token_input",
+            )
+            c_n1, c_n2 = st.columns([2, 1])
+            with c_n1:
+                notion_target_input = st.text_input(
+                    "Notion 대상 페이지 / 데이터베이스 URL 또는 ID",
+                    value=notion_target,
+                    placeholder="https://www.notion.so/...",
+                    key="gf_notion_target_input",
+                )
+            with c_n2:
+                notion_title_input = st.text_input(
+                    "페이지 제목 (데이터베이스 저장 시 사용)",
+                    value=f"{repo_slug} 포트폴리오 ({saved_user})",
+                    key="gf_notion_title_input",
+                )
+
+            if st.button("🚀 Notion으로 전송하기", type="secondary", key="gf_btn_notion"):
+                if not notion_token_input.strip():
+                    st.error("Notion Integration Token을 입력해 주세요.")
+                elif not notion_target_input.strip():
+                    st.error("Notion 대상 페이지 또는 데이터베이스 URL/ID를 입력해 주세요.")
+                else:
+                    try:
+                        with st.spinner("Notion 블록 변환 및 전송 중..."):
+                            notion_page_url = send_markdown_to_notion(
+                                notion_token=notion_token_input.strip(),
+                                target=notion_target_input.strip(),
+                                markdown=st.session_state.gf_portfolio_md,
+                                page_title=notion_title_input.strip(),
+                            )
+                            st.session_state.gf_notion_url = notion_page_url
+                    except Exception as exc:
+                        st.error(f"Notion 전송 실패: {exc}")
+
+            if st.session_state.gf_notion_url:
+                st.success("Notion으로 성공적으로 전송되었습니다!")
+                st.link_button("🔗 Notion 페이지 열기", st.session_state.gf_notion_url)
 
 
 if __name__ == "__main__":
