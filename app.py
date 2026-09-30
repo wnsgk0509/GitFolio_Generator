@@ -12,6 +12,10 @@ from dotenv import load_dotenv
 
 from src.gist_exporter import publish_gist
 from src.github_extractor import (
+    DEEP_MAX_COMMITS,
+    DEEP_MAX_PULL_REQUESTS,
+    DEFAULT_MAX_COMMITS,
+    DEFAULT_MAX_PULL_REQUESTS,
     get_readme,
     get_repo,
     get_user_commits,
@@ -109,37 +113,48 @@ def generate_portfolio_markdown(
     username: str,
     github_token: str,
     gemini_api_key: str,
+    mode: str = "standard",
 ) -> str:
     """Extract GitHub activity, then generate portfolio markdown with Gemini."""
-    with st.status("포트폴리오 생성 중...", expanded=True) as status:
-        status.update(label="데이터 추출 중...", state="running")
-        st.write("저장소 README · 커밋 · PR diff를 가져오는 중입니다.")
-        with st.spinner("GitHub 데이터를 추출하는 중..."):
+    is_deep = mode == "deep"
+    max_commits = DEEP_MAX_COMMITS if is_deep else DEFAULT_MAX_COMMITS
+    max_prs = DEEP_MAX_PULL_REQUESTS if is_deep else DEFAULT_MAX_PULL_REQUESTS
+    mode_label = "정밀 분할 모드 (Map-Reduce)" if is_deep else "표준 고속 모드"
+
+    with st.status(f"포트폴리오 생성 중... ({mode_label})", expanded=True) as status:
+        status.update(label="데이터 추출 및 노이즈 필터링 중...", state="running")
+        st.write(f"저장소 README · 커밋(최대 {max_commits}개) · PR diff를 가져오는 중입니다.")
+        with st.spinner("GitHub 데이터를 추출하고 노이즈를 필터링하는 중..."):
             repo = get_repo(repo_url, github_token)
             activity = {
                 "repo_url": repo_url,
                 "repo_full_name": repo.full_name,
                 "username": username,
                 "readme": get_readme(repo),
-                "commits": get_user_commits(repo, username),
-                "pull_requests": get_user_pull_requests(repo, username),
+                "commits": get_user_commits(
+                    repo, username, max_commits=max_commits, on_progress=st.write
+                ),
+                "pull_requests": get_user_pull_requests(
+                    repo, username, max_prs=max_prs, on_progress=st.write
+                ),
             }
 
         commit_count = len(activity["commits"])
         pr_count = len(activity["pull_requests"])
-        st.write(f"추출 완료: 커밋 {commit_count}개, PR {pr_count}개")
+        st.write(f"추출 완료: 유의미한 커밋 {commit_count}개, PR {pr_count}개")
 
         if commit_count == 0 and pr_count == 0:
             raise RuntimeError(
-                f"'{username}'의 커밋/PR을 찾지 못했습니다. Username과 저장소를 확인하세요."
+                f"'{username}'의 유효한 커밋/PR을 찾지 못했습니다. Username과 저장소를 확인하세요."
             )
 
-        status.update(label="AI 분석 중...", state="running")
-        st.write("Gemini Flash가 포트폴리오 마크다운을 작성하는 중입니다.")
+        status.update(label=f"AI 분석 중... ({mode_label})", state="running")
+        st.write("Gemini Flash가 활동 내역을 심층 분석하고 포트폴리오를 작성하는 중입니다.")
         with st.spinner("AI가 포트폴리오를 분석·작성하는 중..."):
             markdown = generate_portfolio(
                 activity,
                 gemini_api_key,
+                mode=mode,
                 on_progress=st.write,
             )
 
@@ -172,6 +187,18 @@ def main() -> None:
             placeholder="contributor-login",
             key="gf_username",
         )
+        analysis_mode = st.radio(
+            "분석 모드",
+            options=["standard", "deep"],
+            format_func=lambda x: (
+                "⚡ 표준 고속 모드 (추천: 최근 80개 커밋 및 노이즈 자동 제거, ~15초)"
+                if x == "standard"
+                else "🔍 정밀 분할 모드 (Map-Reduce: 최대 200개 커밋 전 기간 분석, ~40초)"
+            ),
+            index=0,
+            horizontal=True,
+            help="프로젝트 초기 아키텍처부터 전체 변경 내역을 망라하려면 정밀 분할 모드를 선택하세요.",
+        )
         submitted = st.form_submit_button("포트폴리오 생성", type="primary")
 
     if submitted:
@@ -201,6 +228,7 @@ def main() -> None:
                     username=username.strip(),
                     github_token=github_token,
                     gemini_api_key=gemini_api_key,
+                    mode=analysis_mode,
                 )
             except Exception as exc:
                 st.session_state.gf_error = str(exc)
