@@ -71,33 +71,49 @@ def render_sidebar() -> tuple[str, str, str, str]:
     st.sidebar.header("API Keys")
     st.sidebar.caption("키는 세션에만 사용합니다. 코드에 하드코딩하지 마세요.")
 
+    st.sidebar.markdown(
+        "**GitHub PAT** &nbsp;[🔗 발급받으러 가기 ↗](https://github.com/settings/tokens/new?scopes=repo,gist&description=GitFolio%20Generator)"
+    )
     github_token = st.sidebar.text_input(
         "GitHub PAT",
         value=_secret("GITHUB_TOKEN", "GITHUB_PAT"),
         type="password",
-        help="repo, gist 범위가 있는 Personal Access Token",
+        help="repo(저장소 읽기), gist(Gist 배포) 권한이 자동 체크된 토큰 발급 페이지로 이동합니다.",
         key="gf_github_token",
+        label_visibility="collapsed",
+    )
+
+    st.sidebar.markdown(
+        "**Gemini API Key** &nbsp;[🔗 발급받으러 가기 ↗](https://aistudio.google.com/apikey)"
     )
     gemini_api_key = st.sidebar.text_input(
         "Gemini API Key",
         value=_secret("GEMINI_API_KEY"),
         type="password",
+        help="Google AI Studio에서 무료로 API 키를 발급받을 수 있습니다.",
         key="gf_gemini_api_key",
+        label_visibility="collapsed",
     )
 
     with st.sidebar.expander("Notion 설정 (선택)", expanded=False):
+        st.markdown(
+            "**Notion Token** &nbsp;[🔗 발급받으러 가기 ↗](https://www.notion.so/profile/integrations)"
+        )
         notion_token = st.text_input(
             "Notion Token",
             value=_secret("NOTION_TOKEN"),
             type="password",
-            help="Notion Internal Integration Token (secret_...)",
+            help="Notion '내 연동(Integrations)'에서 생성한 시크릿 키 (secret_...)",
             key="gf_sidebar_notion_token",
+            label_visibility="collapsed",
         )
+        st.caption("Notion 대상 (페이지/DB URL 또는 ID)")
         notion_target = st.text_input(
             "Notion Target (Page/DB)",
             value=_secret("NOTION_TARGET", "NOTION_TARGET_ID"),
             help="기본으로 내보낼 Notion 페이지 또는 데이터베이스 URL/ID",
             key="gf_sidebar_notion_target",
+            label_visibility="collapsed",
         )
 
     return (
@@ -321,12 +337,16 @@ def main() -> None:
                 "Notion 페이지 또는 데이터베이스에 포트폴리오를 블록으로 추가합니다. "
                 "(대상 페이지 우측 상단 `···` -> `연결(Connections)`에서 노션 Integration을 추가해야 합니다.)"
             )
+            st.markdown(
+                "**Notion Integration Token** &nbsp;[🔗 발급받으러 가기 ↗](https://www.notion.so/profile/integrations)"
+            )
             notion_token_input = st.text_input(
                 "Notion Integration Token",
                 value=notion_token,
                 type="password",
                 placeholder="secret_...",
                 key="gf_notion_token_input",
+                label_visibility="collapsed",
             )
             c_n1, c_n2 = st.columns([2, 1])
             with c_n1:
